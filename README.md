@@ -215,7 +215,7 @@ If you use this code, please cite:
 @software{sycophancy_detection,
   title = {Sycophancy Detection via Representation Engineering},
   author = {Vamshi Krishna Bonagiri, Aryaman Bahl},
-  year = {2024},
+  year = {2026},
   url = {https://github.com/victorknox/sycophancy-detection}
 }
 ```
