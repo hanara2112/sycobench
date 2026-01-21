@@ -47,7 +47,12 @@ def extract_activations_for_diffmean(
     device: torch.device,
     desc: str = "Extracting",
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """Extract LAST TOKEN activations for positive and negative instances (for DiffMean)."""
+    """Extract activations at the last PROMPT token for pos/neg instances (for DiffMean).
+    
+    We use the last prompt token (before the answer) because:
+    - The answer tokens (A)/(B) are context-independent
+    - The prompt's final token contains the model's 'decision state'
+    """
     positive_activations = []
     negative_activations = []
 
@@ -55,6 +60,16 @@ def extract_activations_for_diffmean(
         chat_prompt = build_chat_prompt(tokenizer, item["prompt"])
         full_text = chat_prompt + item["completion"]
 
+        # Tokenize prompt only to find where it ends
+        prompt_tokens = tokenizer(
+            chat_prompt,
+            return_tensors="pt",
+            truncation=True,
+            add_special_tokens=True,
+        )
+        prompt_len = prompt_tokens["input_ids"].shape[1]
+
+        # Tokenize full text
         inputs = tokenizer(
             full_text,
             return_tensors="pt",
@@ -65,16 +80,18 @@ def extract_activations_for_diffmean(
 
         activations = gather_residual_activations(model, layer_idx, inputs)
 
-        # Use ONLY the last token activation (the answer token)
+        # Use the LAST TOKEN of the PROMPT (before the answer)
+        # This is where the model's "decision state" is encoded
+        last_prompt_idx = prompt_len - 1
         if activations.dim() == 2:
-            last_token_act = activations[-1, :]  # [hidden_dim]
+            prompt_act = activations[last_prompt_idx, :]
         else:
-            last_token_act = activations[0, -1, :]  # [hidden_dim]
+            prompt_act = activations[0, last_prompt_idx, :]
 
         if item["label"] == 1:
-            positive_activations.append(last_token_act.cpu())
+            positive_activations.append(prompt_act.cpu())
         else:
-            negative_activations.append(last_token_act.cpu())
+            negative_activations.append(prompt_act.cpu())
 
     return positive_activations, negative_activations
 
@@ -87,7 +104,7 @@ def extract_activations_for_probe(
     device: torch.device,
     desc: str = "Extracting",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Extract activations and labels for all instances (for Probe)."""
+    """Extract activations at the last PROMPT token for all instances (for Probe)."""
     activations_list = []
     labels_list = []
 
@@ -95,6 +112,16 @@ def extract_activations_for_probe(
         chat_prompt = build_chat_prompt(tokenizer, item["prompt"])
         full_text = chat_prompt + item["completion"]
 
+        # Tokenize prompt only to find where it ends
+        prompt_tokens = tokenizer(
+            chat_prompt,
+            return_tensors="pt",
+            truncation=True,
+            add_special_tokens=True,
+        )
+        prompt_len = prompt_tokens["input_ids"].shape[1]
+
+        # Tokenize full text
         inputs = tokenizer(
             full_text,
             return_tensors="pt",
@@ -105,12 +132,14 @@ def extract_activations_for_probe(
 
         activations = gather_residual_activations(model, layer_idx, inputs)
 
+        # Use the LAST TOKEN of the PROMPT
+        last_prompt_idx = prompt_len - 1
         if activations.dim() == 2:
-            item_activations = activations.mean(dim=0)
+            prompt_act = activations[last_prompt_idx, :]
         else:
-            item_activations = activations[0].mean(dim=0)
+            prompt_act = activations[0, last_prompt_idx, :]
 
-        activations_list.append(item_activations.to(torch.float32).cpu().numpy())
+        activations_list.append(prompt_act.to(torch.float32).cpu().numpy())
         labels_list.append(item["label"])
 
     return np.array(activations_list), np.array(labels_list)
@@ -148,7 +177,7 @@ def compute_diffmean_scores(
     layer_idx: int,
     device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute scores for instances using the direction vector on LAST TOKEN."""
+    """Compute scores for instances using the direction vector on last PROMPT token."""
     # Keep direction on CPU to avoid multi-GPU device issues
     direction_tensor = torch.tensor(direction, dtype=torch.float32)
 
@@ -159,6 +188,16 @@ def compute_diffmean_scores(
         chat_prompt = build_chat_prompt(tokenizer, item["prompt"])
         full_text = chat_prompt + item["completion"]
 
+        # Tokenize prompt only to find where it ends
+        prompt_tokens = tokenizer(
+            chat_prompt,
+            return_tensors="pt",
+            truncation=True,
+            add_special_tokens=True,
+        )
+        prompt_len = prompt_tokens["input_ids"].shape[1]
+
+        # Tokenize full text
         inputs = tokenizer(
             full_text,
             return_tensors="pt",
@@ -169,15 +208,16 @@ def compute_diffmean_scores(
 
         activations = gather_residual_activations(model, layer_idx, inputs)
 
-        # Use ONLY the last token activation
+        # Use the LAST TOKEN of the PROMPT
+        last_prompt_idx = prompt_len - 1
         if activations.dim() == 2:
-            last_token_act = activations[-1, :].to(torch.float32)
+            prompt_act = activations[last_prompt_idx, :].to(torch.float32)
         else:
-            last_token_act = activations[0, -1, :].to(torch.float32)
+            prompt_act = activations[0, last_prompt_idx, :].to(torch.float32)
 
         # Move to CPU for dot product
-        last_token_act = last_token_act.cpu()
-        score = (last_token_act @ direction_tensor).item()
+        prompt_act = prompt_act.cpu()
+        score = (prompt_act @ direction_tensor).item()
         scores.append(score)
         labels.append(item["label"])
 
