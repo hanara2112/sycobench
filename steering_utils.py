@@ -302,7 +302,7 @@ def train_sycophancy_direction(
     if norm > 0:
         direction = direction / norm
     
-    return direction.numpy()
+    return direction.to(torch.float32).numpy() ## numpy does not support converting BFloat16 to float32
 
 
 def generate_with_steering(

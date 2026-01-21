@@ -90,7 +90,7 @@ def train_diffmean(
     if norm > 0:
         direction = direction / norm
 
-    return direction.numpy()
+    return direction.to(torch.float32).numpy() # numpy does not support converting BFloat16 to float32
 
 
 def compute_scores(
