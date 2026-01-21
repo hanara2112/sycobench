@@ -45,10 +45,9 @@ def extract_activations_for_diffmean(
     data: list[dict],
     layer_idx: int,
     device: torch.device,
-    prefix_length: int = 1,
     desc: str = "Extracting",
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """Extract activations for positive and negative instances (for DiffMean)."""
+    """Extract LAST TOKEN activations for positive and negative instances (for DiffMean)."""
     positive_activations = []
     negative_activations = []
 
@@ -66,17 +65,16 @@ def extract_activations_for_diffmean(
 
         activations = gather_residual_activations(model, layer_idx, inputs)
 
+        # Use ONLY the last token activation (the answer token)
         if activations.dim() == 2:
-            seq_len = activations.shape[0]
-            item_activations = activations[prefix_length:seq_len, :]
+            last_token_act = activations[-1, :]  # [hidden_dim]
         else:
-            seq_len = activations.shape[1]
-            item_activations = activations[0, prefix_length:seq_len, :]
+            last_token_act = activations[0, -1, :]  # [hidden_dim]
 
         if item["label"] == 1:
-            positive_activations.append(item_activations.cpu())
+            positive_activations.append(last_token_act.cpu())
         else:
-            negative_activations.append(item_activations.cpu())
+            negative_activations.append(last_token_act.cpu())
 
     return positive_activations, negative_activations
 
@@ -126,9 +124,10 @@ def train_diffmean(
     positive_activations: list[torch.Tensor],
     negative_activations: list[torch.Tensor],
 ) -> np.ndarray:
-    """Train diff-in-means direction."""
-    all_positive = torch.cat(positive_activations, dim=0)
-    all_negative = torch.cat(negative_activations, dim=0)
+    """Train diff-in-means direction from last-token activations."""
+    # Stack activations: each is [hidden_dim], so stack to [N, hidden_dim]
+    all_positive = torch.stack(positive_activations, dim=0)
+    all_negative = torch.stack(negative_activations, dim=0)
 
     mean_positive = all_positive.mean(dim=0)
     mean_negative = all_negative.mean(dim=0)
@@ -148,9 +147,8 @@ def compute_diffmean_scores(
     direction: np.ndarray,
     layer_idx: int,
     device: torch.device,
-    prefix_length: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute scores for instances using the direction vector."""
+    """Compute scores for instances using the direction vector on LAST TOKEN."""
     # Keep direction on CPU to avoid multi-GPU device issues
     direction_tensor = torch.tensor(direction, dtype=torch.float32)
 
@@ -171,18 +169,16 @@ def compute_diffmean_scores(
 
         activations = gather_residual_activations(model, layer_idx, inputs)
 
+        # Use ONLY the last token activation
         if activations.dim() == 2:
-            seq_len = activations.shape[0]
-            item_activations = activations[prefix_length:seq_len, :].to(torch.float32)
+            last_token_act = activations[-1, :].to(torch.float32)
         else:
-            seq_len = activations.shape[1]
-            item_activations = activations[0, prefix_length:seq_len, :].to(torch.float32)
+            last_token_act = activations[0, -1, :].to(torch.float32)
 
-        # Move to CPU for dot product (avoids multi-GPU device mismatch)
-        item_activations = item_activations.cpu()
-        token_scores = item_activations @ direction_tensor
-        max_score = token_scores.max().item()
-        scores.append(max_score)
+        # Move to CPU for dot product
+        last_token_act = last_token_act.cpu()
+        score = (last_token_act @ direction_tensor).item()
+        scores.append(score)
         labels.append(item["label"])
 
     return np.array(scores), np.array(labels)
