@@ -140,15 +140,40 @@ def run_diffmean_detection(
         model, tokenizer, train_data, layer, device, desc="Train"
     )
 
+    # DEBUG: Inspection
+    print(f"DEBUG: pos_acts type: {type(pos_acts)}, len: {len(pos_acts)}")
+    if len(pos_acts) > 0:
+        print(f"DEBUG: pos_acts[0] shape: {pos_acts[0].shape}")
+    print(f"DEBUG: neg_acts type: {type(neg_acts)}, len: {len(neg_acts)}")
+    if len(neg_acts) > 0:
+        print(f"DEBUG: neg_acts[0] shape: {neg_acts[0].shape}")
+
+
     # Train direction (using the original function)
     print("Training diff-in-means direction...")
     direction = train_diffmean(pos_acts, neg_acts)
+    
+    # DEBUG: Direction
+    print(f"DEBUG: direction shape: {direction.shape}")
+    print(f"DEBUG: direction norm: {np.linalg.norm(direction)}")
+    print(f"DEBUG: direction mean: {direction.mean():.6f}, std: {direction.std():.6f}")
+    if np.isnan(direction).any():
+        print("DEBUG: WARNING direction contains NaNs!")
+
 
     # Compute training scores for threshold (using the original function)
     print("Computing training scores...")
     train_scores, train_labels = compute_diffmean_scores(
         model, tokenizer, train_data, direction, layer, device
     )
+    
+    # DEBUG: Scores
+    print(f"DEBUG: train_scores shape: {train_scores.shape}")
+    print(f"DEBUG: train_scores min: {train_scores.min():.4f}, max: {train_scores.max():.4f}, mean: {train_scores.mean():.4f}")
+    print(f"DEBUG: train_labels mean: {train_labels.mean():.4f} (should be approx 0.5)")
+    if len(train_scores) > 10:
+        print(f"DEBUG: train_scores[:10]: {train_scores[:10]}")
+
     threshold, train_acc = find_optimal_threshold(train_scores, train_labels)
     print(f"Train accuracy: {train_acc:.4f}, threshold: {threshold:.4f}")
 
