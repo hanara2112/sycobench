@@ -1,8 +1,7 @@
 """
 Unified detection benchmark script.
 
-Supports both DiffMean and Linear Probe methods for detecting
-sycophancy/deception from model activations.
+Imports working functions from run_layer_sweep.py and run_linear_probe.py
 
 Usage:
     python run_detection.py \
@@ -23,228 +22,24 @@ import numpy as np
 import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, accuracy_score, f1_score
-from tqdm import tqdm
 
 from utils import (
     set_seed,
     get_device,
     load_jsonl,
     load_model_and_tokenizer,
-    build_chat_prompt,
-    gather_residual_activations,
 )
 
+from run_layer_sweep import (
+    extract_activations as extract_activations_diffmean,
+    train_diffmean,
+    compute_scores as compute_diffmean_scores,
+    find_optimal_threshold,
+)
+from run_linear_probe import (
+    extract_activations as extract_activations_probe,
+)
 
-# =============================================================================
-# Activation Extraction (adapted from run_layer_sweep.py)
-# =============================================================================
-
-def extract_activations_for_diffmean(
-    model,
-    tokenizer,
-    data: list[dict],
-    layer_idx: int,
-    device: torch.device,
-    desc: str = "Extracting",
-) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """Extract activations at the last PROMPT token for pos/neg instances (for DiffMean).
-    
-    We use the last prompt token (before the answer) because:
-    - The answer tokens (A)/(B) are context-independent
-    - The prompt's final token contains the model's 'decision state'
-    """
-    positive_activations = []
-    negative_activations = []
-
-    for item in tqdm(data, desc=desc, leave=False):
-        chat_prompt = build_chat_prompt(tokenizer, item["prompt"])
-        full_text = chat_prompt + item["completion"]
-
-        # Tokenize prompt only to find where it ends
-        prompt_tokens = tokenizer(
-            chat_prompt,
-            return_tensors="pt",
-            truncation=True,
-            add_special_tokens=True,
-        )
-        prompt_len = prompt_tokens["input_ids"].shape[1]
-
-        # Tokenize full text
-        inputs = tokenizer(
-            full_text,
-            return_tensors="pt",
-            truncation=True,
-            add_special_tokens=True,
-        )
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        activations = gather_residual_activations(model, layer_idx, inputs)
-
-        # Use the LAST TOKEN of the PROMPT (before the answer)
-        # This is where the model's "decision state" is encoded
-        last_prompt_idx = prompt_len - 1
-        if activations.dim() == 2:
-            prompt_act = activations[last_prompt_idx, :]
-        else:
-            prompt_act = activations[0, last_prompt_idx, :]
-
-        if item["label"] == 1:
-            positive_activations.append(prompt_act.cpu())
-        else:
-            negative_activations.append(prompt_act.cpu())
-
-    return positive_activations, negative_activations
-
-
-def extract_activations_for_probe(
-    model,
-    tokenizer,
-    data: list[dict],
-    layer_idx: int,
-    device: torch.device,
-    desc: str = "Extracting",
-) -> tuple[np.ndarray, np.ndarray]:
-    """Extract activations at the last PROMPT token for all instances (for Probe)."""
-    activations_list = []
-    labels_list = []
-
-    for item in tqdm(data, desc=desc, leave=False):
-        chat_prompt = build_chat_prompt(tokenizer, item["prompt"])
-        full_text = chat_prompt + item["completion"]
-
-        # Tokenize prompt only to find where it ends
-        prompt_tokens = tokenizer(
-            chat_prompt,
-            return_tensors="pt",
-            truncation=True,
-            add_special_tokens=True,
-        )
-        prompt_len = prompt_tokens["input_ids"].shape[1]
-
-        # Tokenize full text
-        inputs = tokenizer(
-            full_text,
-            return_tensors="pt",
-            truncation=True,
-            add_special_tokens=True,
-        )
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        activations = gather_residual_activations(model, layer_idx, inputs)
-
-        # Use the LAST TOKEN of the PROMPT
-        last_prompt_idx = prompt_len - 1
-        if activations.dim() == 2:
-            prompt_act = activations[last_prompt_idx, :]
-        else:
-            prompt_act = activations[0, last_prompt_idx, :]
-
-        activations_list.append(prompt_act.to(torch.float32).cpu().numpy())
-        labels_list.append(item["label"])
-
-    return np.array(activations_list), np.array(labels_list)
-
-
-# =============================================================================
-# DiffMean Method (from run_layer_sweep.py)
-# =============================================================================
-
-def train_diffmean(
-    positive_activations: list[torch.Tensor],
-    negative_activations: list[torch.Tensor],
-) -> np.ndarray:
-    """Train diff-in-means direction from last-token activations."""
-    # Stack activations: each is [hidden_dim], so stack to [N, hidden_dim]
-    all_positive = torch.stack(positive_activations, dim=0)
-    all_negative = torch.stack(negative_activations, dim=0)
-
-    mean_positive = all_positive.mean(dim=0)
-    mean_negative = all_negative.mean(dim=0)
-
-    direction = mean_positive - mean_negative
-    norm = torch.norm(direction)
-    if norm > 0:
-        direction = direction / norm
-
-    return direction.to(torch.float32).numpy()
-
-
-def compute_diffmean_scores(
-    model,
-    tokenizer,
-    data: list[dict],
-    direction: np.ndarray,
-    layer_idx: int,
-    device: torch.device,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute scores for instances using the direction vector on last PROMPT token."""
-    # Keep direction on CPU to avoid multi-GPU device issues
-    direction_tensor = torch.tensor(direction, dtype=torch.float32)
-
-    scores = []
-    labels = []
-
-    for item in tqdm(data, desc="Scoring", leave=False):
-        chat_prompt = build_chat_prompt(tokenizer, item["prompt"])
-        full_text = chat_prompt + item["completion"]
-
-        # Tokenize prompt only to find where it ends
-        prompt_tokens = tokenizer(
-            chat_prompt,
-            return_tensors="pt",
-            truncation=True,
-            add_special_tokens=True,
-        )
-        prompt_len = prompt_tokens["input_ids"].shape[1]
-
-        # Tokenize full text
-        inputs = tokenizer(
-            full_text,
-            return_tensors="pt",
-            truncation=True,
-            add_special_tokens=True,
-        )
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        activations = gather_residual_activations(model, layer_idx, inputs)
-
-        # Use the LAST TOKEN of the PROMPT
-        last_prompt_idx = prompt_len - 1
-        if activations.dim() == 2:
-            prompt_act = activations[last_prompt_idx, :].to(torch.float32)
-        else:
-            prompt_act = activations[0, last_prompt_idx, :].to(torch.float32)
-
-        # Move to CPU for dot product
-        prompt_act = prompt_act.cpu()
-        score = (prompt_act @ direction_tensor).item()
-        scores.append(score)
-        labels.append(item["label"])
-
-    return np.array(scores), np.array(labels)
-
-
-def find_optimal_threshold(scores: np.ndarray, labels: np.ndarray) -> tuple[float, float]:
-    """Find optimal threshold to maximize accuracy."""
-    thresholds = np.unique(scores)
-    thresholds = np.concatenate([[scores.min() - 1], thresholds, [scores.max() + 1]])
-
-    best_threshold = 0.0
-    best_acc = 0.0
-
-    for t in thresholds:
-        preds = (scores > t).astype(int)
-        acc = (preds == labels).mean()
-        if acc > best_acc:
-            best_acc = acc
-            best_threshold = t
-
-    return best_threshold, best_acc
-
-
-# =============================================================================
-# Main Detection Function
-# =============================================================================
 
 def run_detection(
     model_name: str,
@@ -256,25 +51,13 @@ def run_detection(
     output_file: str | None = None,
 ) -> dict:
     """
-    Run detection experiment.
-    
-    Args:
-        model_name: HuggingFace model name
-        train_file: Path to training JSONL
-        test_file: Path to test JSONL
-        method: Detection method ('diffmean' or 'probe')
-        layer: Layer index to extract activations from
-        seed: Random seed
-        output_file: Optional CSV file to append results
-    
-    Returns:
-        Dictionary of metrics
+    Run detection experiment using the original working functions.
     """
     set_seed(seed)
     device = get_device()
     print(f"Using device: {device}")
 
-    # Load data
+    # Load data from JSONL files
     print(f"Loading train data: {train_file}")
     train_data = load_jsonl(train_file)
     print(f"Loading test data: {test_file}")
@@ -312,12 +95,11 @@ def run_detection(
 
     # Parse metadata from file path
     train_path = Path(train_file)
-    # Expected: data/<concept>/<setting>/seed_<N>/train.jsonl
     parts = train_path.parts
     try:
-        concept = parts[-4]  # e.g., 'sycophancy' or 'deception'
-        setting = parts[-3]  # e.g., 'political' or 'truthfulqa'
-        seed_dir = parts[-2]  # e.g., 'seed_0'
+        concept = parts[-4]
+        setting = parts[-3]
+        seed_dir = parts[-2]
         seed_num = int(seed_dir.split("_")[1])
     except (IndexError, ValueError):
         concept = "unknown"
@@ -351,18 +133,18 @@ def run_diffmean_detection(
     layer: int,
     device: torch.device,
 ) -> dict:
-    """Run DiffMean detection."""
-    # Extract training activations
+    """Run DiffMean detection using functions from run_layer_sweep.py."""
+    # Extract training activations (using the original function)
     print("Extracting training activations...")
-    pos_acts, neg_acts = extract_activations_for_diffmean(
+    pos_acts, neg_acts = extract_activations_diffmean(
         model, tokenizer, train_data, layer, device, desc="Train"
     )
 
-    # Train direction
+    # Train direction (using the original function)
     print("Training diff-in-means direction...")
     direction = train_diffmean(pos_acts, neg_acts)
 
-    # Compute training scores for threshold
+    # Compute training scores for threshold (using the original function)
     print("Computing training scores...")
     train_scores, train_labels = compute_diffmean_scores(
         model, tokenizer, train_data, direction, layer, device
@@ -398,16 +180,16 @@ def run_probe_detection(
     device: torch.device,
     seed: int,
 ) -> dict:
-    """Run Linear Probe detection."""
-    # Extract training activations
+    """Run Linear Probe detection using functions from run_linear_probe.py."""
+    # Extract training activations (using the original function)
     print("Extracting training activations...")
-    X_train, y_train = extract_activations_for_probe(
+    X_train, y_train = extract_activations_probe(
         model, tokenizer, train_data, layer, device, desc="Train"
     )
 
     # Extract test activations
     print("Extracting test activations...")
-    X_test, y_test = extract_activations_for_probe(
+    X_test, y_test = extract_activations_probe(
         model, tokenizer, test_data, layer, device, desc="Test"
     )
 
