@@ -177,6 +177,8 @@ def compute_diffmean_scores(
             seq_len = activations.shape[1]
             item_activations = activations[0, prefix_length:seq_len, :].to(torch.float32)
 
+        # Ensure same device (multi-GPU compatibility)
+        item_activations = item_activations.to(direction_tensor.device)
         token_scores = item_activations @ direction_tensor
         max_score = token_scores.max().item()
         scores.append(max_score)
