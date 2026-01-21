@@ -151,7 +151,8 @@ def compute_diffmean_scores(
     prefix_length: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute scores for instances using the direction vector."""
-    direction_tensor = torch.tensor(direction, dtype=torch.float32, device=device)
+    # Keep direction on CPU to avoid multi-GPU device issues
+    direction_tensor = torch.tensor(direction, dtype=torch.float32)
 
     scores = []
     labels = []
@@ -177,8 +178,8 @@ def compute_diffmean_scores(
             seq_len = activations.shape[1]
             item_activations = activations[0, prefix_length:seq_len, :].to(torch.float32)
 
-        # Ensure same device (multi-GPU compatibility)
-        item_activations = item_activations.to(direction_tensor.device)
+        # Move to CPU for dot product (avoids multi-GPU device mismatch)
+        item_activations = item_activations.cpu()
         token_scores = item_activations @ direction_tensor
         max_score = token_scores.max().item()
         scores.append(max_score)
