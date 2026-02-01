@@ -130,8 +130,8 @@ def compute_scores(
             item_activations = activations[0, prefix_length:seq_len, :].to(torch.float32)
 
         token_scores = item_activations @ direction_tensor
-        max_score = token_scores.max().item()
-        scores.append(max_score)
+        mean_score = token_scores.mean().item()  # Use mean for stability across seeds
+        scores.append(mean_score)
         labels.append(item["label"])
 
     return np.array(scores), np.array(labels)

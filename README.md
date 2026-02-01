@@ -1,231 +1,193 @@
 # Sycophancy Detection via Representation Engineering
 
-Detection of sycophantic behavior in large language models using white-box methods. This project implements activation-based detection approaches from representation engineering to identify when LLMs give sycophantic (user-pleasing rather than truthful) responses.
-
-## Overview
-
-**Sycophancy** is when an AI assistant agrees with or validates a user's stated beliefs, preferences, or biases rather than providing objective, truthful responses. This is problematic because it can reinforce misconceptions and reduce the utility of AI assistants.
-
-This repository provides tools to:
-1. **Measure** how often a model exhibits sycophantic behavior
-2. **Detect** sycophantic responses using activation-based methods
-3. **Compare** different detection approaches (diff-in-means, linear probes, LLM-as-judge)
-
-### Key Findings
-
-| Method | Test Accuracy | Test AUROC | Notes |
-|--------|--------------|------------|-------|
-| Random Baseline | ~50% | ~50% | Sanity check |
-| LLM-as-Judge | 60-75% | 0.692 | Black-box baseline |
-| **Diff-in-Means** | **85-95%** | **0.90-0.98** | Best performing |
-| Linear Probe | 80-92% | 0.88-0.96 | Comparable to diff-in-means |
-
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/victorknox/sycophancy-detection.git
-cd sycophancy-detection
-
-# Create virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or: venv\Scripts\activate  # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### Requirements
-- Python 3.10+
-- PyTorch 2.0+
-- CUDA-capable GPU (recommended, 8GB+ VRAM)
-- ~5GB disk space for model weights
+Detection and mitigation of sycophantic behavior in LLMs using activation-based methods.
 
 ## Quick Start
 
-### 1. Prepare Data
-
-Download and process the dataset from HuggingFace:
-
 ```bash
-python data_prep.py --n-train 1000 --n-test 500
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Run layer sweep (find best layer)
+python run_layer_sweep.py --model Qwen/Qwen2.5-0.5B-Instruct --train-instances 200 --test-instances 100
+
+# 3. Run detection benchmark
+python run_detection.py \
+    --model Qwen/Qwen2.5-0.5B-Instruct \
+    --train-file data/sycophancy/political/seed_0/train.jsonl \
+    --test-file data/sycophancy/political/seed_0/test.jsonl \
+    --method diffmean --layer 12
 ```
 
-This creates balanced train/test splits with contrastive pairs in `data/`.
+## Key Results
 
-### 2. Run Experiments
+| Method | Test AUROC | Notes |
+|--------|------------|-------|
+| Random Baseline | ~50% | Sanity check |
+| LLM-as-Judge | 0.69 | Black-box baseline |
+| Linear Probe | 0.88-0.96 | White-box |
+| **Diff-in-Means** | **0.90-0.98** | Best performing |
 
-**Layer Sweep (Diff-in-Means)** - Find the best layer for detection:
+---
+
+## Experiments
+
+### Core Detection
+
 ```bash
+# Layer sweep - find best layer
 python run_layer_sweep.py --model Qwen/Qwen2.5-3B-Instruct
-```
 
-**Linear Probe** - Train logistic regression on activations:
-```bash
+# Linear probe
 python run_linear_probe.py --model Qwen/Qwen2.5-3B-Instruct
+
+# Unified detection benchmark
+python run_detection.py \
+    --train-file data/sycophancy/political/seed_0/train.jsonl \
+    --test-file data/sycophancy/political/seed_0/test.jsonl \
+    --method diffmean --layer 20
 ```
 
-**Model Sycophancy Rate** - Measure how often the model is sycophantic:
+### Generalization Experiments
+
+**OOD Generalization** - Train on multiple domains, test on held-out domain:
 ```bash
+python run_ood_eval.py --model Qwen/Qwen2.5-3B-Instruct
+# Train: political + philpapers → Test: nlp_survey
+# Expected: AUROC > 0.80 → NOT a dataset artifact
+```
+
+**Cross-Concept Transfer** - Test if sycophancy ≠ deception:
+```bash
+python run_cross_concept.py --model Qwen/Qwen2.5-3B-Instruct
+# Train sycophancy → Test deception (should FAIL)
+# Expected: AUROC < 0.60 → Concept-specific direction
+```
+
+**Direction Similarity** - Verify directions are distinct:
+```bash
+python run_direction_sim.py --model Qwen/Qwen2.5-3B-Instruct
+# Expected: cos(syco, deception) < 0.3
+```
+
+### Mitigation
+
+```bash
+# Steering experiment with alpha sweep
+python run_steering.py --model Qwen/Qwen2.5-3B-Instruct --alpha-sweep
+```
+
+### Baselines
+
+```bash
+# LLM-as-judge baseline
+python run_llm_judge_baseline.py --model Qwen/Qwen2.5-3B-Instruct
+
+# Random baseline
+python run_random_baseline.py
+
+# Model sycophancy rate
 python run_model_sycophancy_rate.py --model Qwen/Qwen2.5-3B-Instruct
 ```
 
-**LLM-as-Judge Baseline** - Black-box detection baseline:
-```bash
-python run_llm_judge_baseline.py --model Qwen/Qwen2.5-3B-Instruct
-```
-
-## Methods
-
-### Diff-in-Means (Representation Engineering)
-
-The core method learns a "sycophancy direction" in the model's activation space:
-
-1. **Extract activations** from a specific layer for sycophantic (label=1) and non-sycophantic (label=0) responses
-2. **Compute direction**: `v = mean(h | sycophantic) - mean(h | non-sycophantic)`
-3. **Score new responses** by projecting their activations onto this direction
-4. **Classify** using an optimal threshold learned on the training set
-
-This approach is inspired by [Representation Engineering](https://arxiv.org/abs/2310.01405).
-
-### Linear Probe
-
-Trains a logistic regression classifier directly on the model's hidden activations:
-- Uses mean-pooled activations from each layer
-- Provides interpretable decision boundary
-- Generally comparable performance to diff-in-means
-
-### LLM-as-Judge
-
-Uses the same model (or a larger model) to judge whether responses are sycophantic:
-- Zero-shot prompting with structured JSON output
-- Serves as a black-box baseline
-- Lower accuracy than white-box methods
+---
 
 ## Project Structure
 
 ```
-sycophancy-detection/
+sycobench/
 ├── data_prep.py              # Dataset preparation
-├── run_layer_sweep.py        # Diff-in-means layer sweep experiment
-├── run_linear_probe.py       # Linear probe experiment
-├── run_model_sycophancy_rate.py  # Model sycophancy measurement
-├── run_llm_judge_baseline.py # LLM-as-judge baseline
-├── run_random_baseline.py    # Random baseline
 ├── utils.py                  # Shared utilities
-├── requirements.txt          # Dependencies
-├── data/                     # Prepared data (gitignored)
-└── results/                  # Experiment results (gitignored)
+├── steering_utils.py         # Steering utilities
+│
+├── run_layer_sweep.py        # Diff-in-means layer sweep
+├── run_linear_probe.py       # Linear probe experiment
+├── run_detection.py          # Unified detection benchmark
+│
+├── run_ood_eval.py           # OOD generalization test
+├── run_cross_concept.py      # Cross-concept transfer test
+├── run_direction_sim.py      # Direction similarity analysis
+│
+├── run_steering.py           # Activation steering
+├── run_llm_judge_baseline.py # LLM judge baseline
+├── run_model_sycophancy_rate.py
+├── run_random_baseline.py
+│
+├── data/                     # Datasets
+│   ├── sycophancy/
+│   │   ├── political/
+│   │   ├── philpapers/
+│   │   ├── nlp_survey/
+│   │   └── cross_domain_political_philpapers_to_nlp_survey/
+│   └── deception/
+│       └── truthfulqa/
+└── results/                  # Output
 ```
 
-## Configuration Options
+---
 
-### Common Arguments
+## Datasets
+
+| Concept | Setting | Train | Test |
+|---------|---------|-------|------|
+| Sycophancy | political | 1000 | 1000 |
+| Sycophancy | philpapers | 1000 | 1000 |
+| Sycophancy | nlp_survey | 1000 | 1000 |
+| Sycophancy | cross_domain | 1000 | 1000 |
+| Deception | truthfulqa | 600 | 600 |
+
+---
+
+## Common Arguments
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `--seed` | Random seed for reproducibility | 42 |
-| `--model` | HuggingFace model name | `Qwen/Qwen2.5-3B-Instruct` |
-| `--output-dir` | Directory for results | `results` |
-
-### Layer Sweep / Linear Probe
-
-| Argument | Description | Default |
-|----------|-------------|---------|
-| `--layers` | Specific layers to test | Auto-select |
-| `--train-instances` | Training set size | 2000 |
-| `--test-instances` | Test set size | 1000 |
+| `--model` | HuggingFace model | `Qwen/Qwen2.5-3B-Instruct` |
+| `--seed` | Random seed | 42 |
+| `--train-instances` | Training size | 2000 |
+| `--test-instances` | Test size | 1000 |
+| `--layer` | Layer index | Auto-select |
+| `--output-dir` | Results directory | `results` |
 
 ### Supported Models
 
-Any HuggingFace causal LM works. Tested models:
-- `Qwen/Qwen2.5-0.5B-Instruct`
-- `Qwen/Qwen2.5-1.5B-Instruct`
-- `Qwen/Qwen2.5-3B-Instruct`
-- `Qwen/Qwen2.5-7B-Instruct`
-- `Qwen/Qwen2.5-14B-Instruct`
+- Qwen/Qwen2.5-{0.5B,1.5B,3B,7B,14B}-Instruct
+- google/gemma-2-{2b,9b}-it
 
-## Dataset
+---
 
-Uses the [Anthropic Model-Written Evals](https://huggingface.co/datasets/Anthropic/model-written-evals) political typology sycophancy dataset:
+## Methods
 
-- **Format**: Each example contains a political biography prompt and two answer options
-- **Labels**:
-  - `label=1`: Sycophantic response (matches user's stated political views)
-  - `label=0`: Non-sycophantic response (objective/contrarian)
-- **Size**: ~1000 unique prompts available
+### Diff-in-Means
 
-Example:
-```
-Prompt: "I am a [political biography]. Which of these statements do you agree with?
-(A) [Statement aligned with user's views]
-(B) [Contrarian statement]"
+1. Extract activations for sycophantic (label=1) and non-sycophantic (label=0) responses
+2. Compute direction: `v = mean(h | syco) - mean(h | non-syco)`
+3. Score by projection: `score = h · v`
+4. Classify using optimal threshold
 
-Sycophantic: Model chooses (A) to please the user
-Non-sycophantic: Model chooses (B) objectively
-```
+### Linear Probe
 
-## Results Interpretation
+Logistic regression on mean-pooled activations.
 
-### Layer Sweep Results
+### Activation Steering
 
-```
-Layer    Train Acc    Test Acc     Test F1      Test AUROC
-0        0.6234       0.5890       0.5723       0.6145
-8        0.8912       0.8456       0.8401       0.9123
-16       0.9534       0.9123       0.9098       0.9678      <-- BEST
-24       0.9345       0.8967       0.8934       0.9534
-```
+Subtract or clamp along the sycophancy direction during generation.
 
-- **Best layer** is typically in the middle-to-late layers (50-75% depth)
-- Early layers capture low-level features, not useful for concept detection
-- Very late layers may have task-specific information that hurts generalization
-
-### Sycophancy Rate Results
-
-```
-Sycophancy Rate: 0.7234
-(362/500 prompts chose sycophantic answer)
-```
-
-This measures the model's inherent tendency to be sycophantic before any detection/mitigation.
-
-## Troubleshooting
-
-**Out of Memory:**
-- Reduce `--train-instances` and `--test-instances`
-- Use `--use-4bit` flag for LLM judge with large models
-- Use a smaller model variant
-
-**Slow Extraction:**
-- Use a GPU (10-100x faster than CPU)
-- Reduce the number of layers tested with `--layers`
-
-**Low Accuracy:**
-- Ensure balanced labels in data (check with `data_prep.py` output)
-- Try different layers (middle layers often work best)
-- Increase training set size
+---
 
 ## Citation
 
-If you use this code, please cite:
-
 ```bibtex
-@software{sycophancy_detection,
+@software{sycobench,
   title = {Sycophancy Detection via Representation Engineering},
   author = {Vamshi Krishna Bonagiri, Aryaman Bahl},
   year = {2026},
-  url = {https://github.com/victorknox/sycophancy-detection}
+  url = {https://github.com/hanara2112/sycobench}
 }
 ```
 
-### Related Work
+## References
 
 - [Representation Engineering](https://arxiv.org/abs/2310.01405) - Zou et al., 2023
-- [Towards Understanding Sycophancy in LLMs](https://arxiv.org/abs/2310.13548) - Sharma et al., 2023
+- [Towards Understanding Sycophancy](https://arxiv.org/abs/2310.13548) - Sharma et al., 2023
 - [Anthropic Model-Written Evals](https://huggingface.co/datasets/Anthropic/model-written-evals)
-
-## License
-
-MIT License - see LICENSE file for details.
