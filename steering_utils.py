@@ -239,7 +239,6 @@ def train_sycophancy_direction(
     train_data: list[dict],
     layer_idx: int,
     device: torch.device,
-    prefix_length: int = 1,
 ) -> np.ndarray:
     """
     Train the sycophancy direction using diff-in-means.
@@ -247,13 +246,15 @@ def train_sycophancy_direction(
     This is a convenience wrapper that computes:
     v = mean(h | sycophantic) - mean(h | non-sycophantic)
     
+    Uses LAST TOKEN representation (model's decision point) for consistency
+    with detection scripts.
+    
     Args:
         model: HuggingFace model
         tokenizer: HuggingFace tokenizer
         train_data: List of training instances with 'prompt', 'completion', 'label'
         layer_idx: Layer to extract activations from
         device: Device to use
-        prefix_length: Number of prefix tokens to skip
     
     Returns:
         Normalized sycophancy direction vector
@@ -278,12 +279,11 @@ def train_sycophancy_direction(
         
         activations = gather_residual_activations(model, layer_idx, inputs)
         
+        # Use last token representation (model's decision point)
         if activations.dim() == 2:
-            seq_len = activations.shape[0]
-            item_activations = activations[prefix_length:seq_len, :]
+            item_activations = activations[-1, :]
         else:
-            seq_len = activations.shape[1]
-            item_activations = activations[0, prefix_length:seq_len, :]
+            item_activations = activations[0, -1, :]
         
         if item["label"] == 1:  # Sycophantic
             positive_activations.append(item_activations.cpu())
@@ -291,8 +291,8 @@ def train_sycophancy_direction(
             negative_activations.append(item_activations.cpu())
     
     # Compute diff-in-means
-    all_positive = torch.cat(positive_activations, dim=0)
-    all_negative = torch.cat(negative_activations, dim=0)
+    all_positive = torch.stack(positive_activations, dim=0)
+    all_negative = torch.stack(negative_activations, dim=0)
     
     mean_positive = all_positive.mean(dim=0)
     mean_negative = all_negative.mean(dim=0)
@@ -302,7 +302,7 @@ def train_sycophancy_direction(
     if norm > 0:
         direction = direction / norm
     
-    return direction.to(torch.float32).numpy() ## numpy does not support converting BFloat16 to float32
+    return direction.to(torch.float32).numpy()
 
 
 def generate_with_steering(
