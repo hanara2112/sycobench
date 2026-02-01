@@ -41,7 +41,11 @@ def extract_activations(
     device: torch.device,
     desc: str = "Extracting",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Extract activations and labels for all instances."""
+    """Extract last-token activations and labels for all instances.
+    
+    Uses last token representation (the model's decision point) rather than
+    mean-pooling over all tokens, which provides richer sycophancy signal.
+    """
     activations_list = []
     labels_list = []
 
@@ -59,10 +63,11 @@ def extract_activations(
 
         activations = gather_residual_activations(model, layer_idx, inputs)
 
+        # Use last token representation (model's decision point)
         if activations.dim() == 2:
-            item_activations = activations.mean(dim=0)
+            item_activations = activations[-1, :]
         else:
-            item_activations = activations[0].mean(dim=0)
+            item_activations = activations[0, -1, :]
 
         activations_list.append(item_activations.cpu().numpy())
         labels_list.append(item["label"])

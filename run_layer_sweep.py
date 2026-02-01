@@ -38,14 +38,17 @@ def extract_activations(
     data: list[dict],
     layer_idx: int,
     device: torch.device,
-    prefix_length: int = 1,
+    use_last_token: bool = True,
     desc: str = "Extracting",
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """
-    Extract mean-pooled activations for positive and negative instances.
+    Extract activations for positive and negative instances.
     
-    Each instance's activations are MEAN-POOLED to a single vector before
-    being returned. This prevents dilution when computing class means.
+    Uses LAST TOKEN representation (the model's decision point) rather than
+    mean-pooling over the short completion tokens.
+    
+    The last token captures the model's internal state when deciding what to output,
+    which contains richer information about sycophantic vs non-sycophantic behavior.
     """
     positive_activations = []
     negative_activations = []
@@ -64,16 +67,12 @@ def extract_activations(
 
         activations = gather_residual_activations(model, layer_idx, inputs)
 
+        # Use last token representation - the model's decision point
+        # This captures the full context including user persona + question
         if activations.dim() == 2:
-            seq_len = activations.shape[0]
-            item_activations = activations[prefix_length:seq_len, :]
+            instance_repr = activations[-1, :]  # Last token
         else:
-            seq_len = activations.shape[1]
-            item_activations = activations[0, prefix_length:seq_len, :]
-
-        # CRITICAL: Mean-pool per instance to get a single representation vector
-        # This prevents signal dilution when computing class means
-        instance_repr = item_activations.mean(dim=0)  # Shape: (hidden_dim,)
+            instance_repr = activations[0, -1, :]  # Last token
 
         if item["label"] == 1:
             positive_activations.append(instance_repr.cpu())
@@ -116,9 +115,8 @@ def compute_scores(
     direction: np.ndarray,
     layer_idx: int,
     device: torch.device,
-    prefix_length: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute scores for instances using the direction vector."""
+    """Compute scores for instances using the direction vector (last token)."""
     direction_tensor = torch.tensor(direction, dtype=torch.float32, device=device)
 
     scores = []
@@ -138,16 +136,14 @@ def compute_scores(
 
         activations = gather_residual_activations(model, layer_idx, inputs)
 
+        # Use last token representation (consistent with extract_activations)
         if activations.dim() == 2:
-            seq_len = activations.shape[0]
-            item_activations = activations[prefix_length:seq_len, :].to(torch.float32)
+            instance_repr = activations[-1, :].to(torch.float32)
         else:
-            seq_len = activations.shape[1]
-            item_activations = activations[0, prefix_length:seq_len, :].to(torch.float32)
+            instance_repr = activations[0, -1, :].to(torch.float32)
 
-        token_scores = item_activations @ direction_tensor
-        mean_score = token_scores.mean().item()  # Use mean for stability across seeds
-        scores.append(mean_score)
+        score = (instance_repr @ direction_tensor).item()
+        scores.append(score)
         labels.append(item["label"])
 
     return np.array(scores), np.array(labels)
