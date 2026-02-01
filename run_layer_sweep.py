@@ -41,7 +41,12 @@ def extract_activations(
     prefix_length: int = 1,
     desc: str = "Extracting",
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """Extract activations for positive and negative instances."""
+    """
+    Extract mean-pooled activations for positive and negative instances.
+    
+    Each instance's activations are MEAN-POOLED to a single vector before
+    being returned. This prevents dilution when computing class means.
+    """
     positive_activations = []
     negative_activations = []
 
@@ -66,10 +71,14 @@ def extract_activations(
             seq_len = activations.shape[1]
             item_activations = activations[0, prefix_length:seq_len, :]
 
+        # CRITICAL: Mean-pool per instance to get a single representation vector
+        # This prevents signal dilution when computing class means
+        instance_repr = item_activations.mean(dim=0)  # Shape: (hidden_dim,)
+
         if item["label"] == 1:
-            positive_activations.append(item_activations.cpu())
+            positive_activations.append(instance_repr.cpu())
         else:
-            negative_activations.append(item_activations.cpu())
+            negative_activations.append(instance_repr.cpu())
 
     return positive_activations, negative_activations
 
@@ -78,10 +87,17 @@ def train_diffmean(
     positive_activations: list[torch.Tensor],
     negative_activations: list[torch.Tensor],
 ) -> np.ndarray:
-    """Train diff-in-means direction."""
-    all_positive = torch.cat(positive_activations, dim=0)
-    all_negative = torch.cat(negative_activations, dim=0)
+    """
+    Train diff-in-means direction.
+    
+    Input: Lists of mean-pooled per-instance activation vectors.
+    Output: Normalized direction vector (positive - negative).
+    """
+    # Stack per-instance representations (each already mean-pooled)
+    all_positive = torch.stack(positive_activations, dim=0)  # (n_pos, hidden_dim)
+    all_negative = torch.stack(negative_activations, dim=0)  # (n_neg, hidden_dim)
 
+    # Mean over instances
     mean_positive = all_positive.mean(dim=0)
     mean_negative = all_negative.mean(dim=0)
 
@@ -90,7 +106,7 @@ def train_diffmean(
     if norm > 0:
         direction = direction / norm
 
-    return direction.to(torch.float32).numpy() # numpy does not support converting BFloat16 to float32
+    return direction.to(torch.float32).numpy()
 
 
 def compute_scores(
