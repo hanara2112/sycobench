@@ -25,7 +25,18 @@ from sklearn.cross_decomposition import PLSRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score
 from sklearn.manifold import TSNE
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.metrics import silhouette_score
 from scipy.stats import gaussian_kde
+from scipy.spatial.distance import pdist, squareform
+
+# Optional: UMAP for visualization
+try:
+    import umap
+    HAS_UMAP = True
+except ImportError:
+    HAS_UMAP = False
+    print("Note: umap-learn not installed. UMAP visualization will be skipped.")
 
 # Local imports
 from utils import (
@@ -484,7 +495,271 @@ plt.close()
 print("Saved: 07_projection_magnitude.png")
 
 # =============================================================================
-# SECTION 11: Summary Statistics
+# SECTION 11: Intrinsic Dimensionality Estimation
+# =============================================================================
+print("\n" + "="*60)
+print("SECTION 11: Intrinsic Dimensionality")
+print("="*60)
+
+def mle_intrinsic_dim(X, k=10):
+    """
+    Maximum Likelihood Estimator for intrinsic dimensionality (Levina-Bickel).
+    Uses k-nearest neighbor distances.
+    """
+    from scipy.spatial.distance import cdist
+    
+    n = X.shape[0]
+    distances = cdist(X, X)
+    np.fill_diagonal(distances, np.inf)
+    
+    # Sort to get k nearest neighbors
+    sorted_dists = np.sort(distances, axis=1)[:, :k]
+    
+    # MLE estimate
+    log_ratios = []
+    for i in range(n):
+        dists = sorted_dists[i, :]
+        if dists[-1] > 0:
+            log_ratio = np.log(dists[-1] / dists[:-1]).mean()
+            if log_ratio > 0:
+                log_ratios.append(1.0 / log_ratio)
+    
+    return np.mean(log_ratios) if log_ratios else 0
+
+def two_nn_intrinsic_dim(X):
+    """
+    Two-NN estimator for intrinsic dimensionality.
+    Uses ratio of 2nd to 1st nearest neighbor distances.
+    """
+    from scipy.spatial.distance import cdist
+    
+    distances = cdist(X, X)
+    np.fill_diagonal(distances, np.inf)
+    sorted_dists = np.sort(distances, axis=1)
+    
+    # Ratio of 2nd to 1st nearest neighbor
+    mu = sorted_dists[:, 1] / (sorted_dists[:, 0] + 1e-12)
+    mu = mu[mu > 1]  # Filter invalid ratios
+    
+    if len(mu) == 0:
+        return 0
+    
+    # MLE: d = n * log(mu) / sum(log(mu))
+    log_mu = np.log(mu)
+    d_estimate = len(mu) / np.sum(log_mu)
+    
+    return d_estimate
+
+# Estimate intrinsic dimensionality for each class
+X_syco = syco_acts[analysis_layer]
+X_honest = honest_acts[analysis_layer]
+
+print("Computing intrinsic dimensionality...")
+
+# MLE estimator
+id_mle_syco = mle_intrinsic_dim(X_syco[:100], k=5)  # Use subset for speed
+id_mle_honest = mle_intrinsic_dim(X_honest[:100], k=5)
+id_mle_combined = mle_intrinsic_dim(X_layer[:200], k=5)
+
+# Two-NN estimator  
+id_2nn_syco = two_nn_intrinsic_dim(X_syco[:100])
+id_2nn_honest = two_nn_intrinsic_dim(X_honest[:100])
+id_2nn_combined = two_nn_intrinsic_dim(X_layer[:200])
+
+print(f"  MLE estimator - Syco: {id_mle_syco:.1f}, Honest: {id_mle_honest:.1f}, Combined: {id_mle_combined:.1f}")
+print(f"  Two-NN estimator - Syco: {id_2nn_syco:.1f}, Honest: {id_2nn_honest:.1f}, Combined: {id_2nn_combined:.1f}")
+
+# Plot 8: Intrinsic dimensionality comparison
+fig, ax = plt.subplots(figsize=(8, 5))
+
+categories = ['Sycophantic', 'Honest', 'Combined']
+mle_dims = [id_mle_syco, id_mle_honest, id_mle_combined]
+twonn_dims = [id_2nn_syco, id_2nn_honest, id_2nn_combined]
+
+x = np.arange(len(categories))
+width = 0.35
+
+ax.bar(x - width/2, mle_dims, width, label='MLE (Levina-Bickel)', color='#3498db')
+ax.bar(x + width/2, twonn_dims, width, label='Two-NN', color='#e74c3c')
+
+ax.set_xlabel('Data Subset', fontsize=12)
+ax.set_ylabel('Estimated Intrinsic Dimension', fontsize=12)
+ax.set_title(f'Intrinsic Dimensionality Estimation (Layer {analysis_layer})', fontsize=14)
+ax.set_xticks(x)
+ax.set_xticklabels(categories)
+ax.legend()
+ax.grid(True, axis='y', alpha=0.3)
+
+# Add text annotation
+ax.axhline(y=1, color='gray', linestyle='--', alpha=0.5, label='1D (single direction)')
+ax.text(2.5, 1, '← 1D', fontsize=9, va='center')
+
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "08_intrinsic_dimensionality.png", dpi=150)
+plt.close()
+print("Saved: 08_intrinsic_dimensionality.png")
+
+# =============================================================================
+# SECTION 12: UMAP / t-SNE Visualization
+# =============================================================================
+print("\n" + "="*60)
+print("SECTION 12: Manifold Visualization (UMAP/t-SNE)")
+print("="*60)
+
+# Use t-SNE (always available) and optionally UMAP
+fig, axes = plt.subplots(1, 2 if HAS_UMAP else 1, figsize=(12 if HAS_UMAP else 8, 6))
+if not HAS_UMAP:
+    axes = [axes]
+
+# t-SNE
+print("Running t-SNE...")
+tsne = TSNE(n_components=2, perplexity=30, random_state=SEED, n_iter=1000)
+X_tsne = tsne.fit_transform(X_layer)
+
+ax = axes[0]
+for label, color, name in [(1, '#FF6B6B', 'Sycophantic'), (0, '#4ECDC4', 'Honest')]:
+    mask = y_layer == label
+    ax.scatter(X_tsne[mask, 0], X_tsne[mask, 1], c=color, alpha=0.6, s=40, label=name)
+
+ax.set_xlabel('t-SNE 1', fontsize=12)
+ax.set_ylabel('t-SNE 2', fontsize=12)
+ax.set_title(f't-SNE Visualization (Layer {analysis_layer})', fontsize=14)
+ax.legend()
+ax.grid(True, alpha=0.3)
+
+# UMAP if available
+if HAS_UMAP:
+    print("Running UMAP...")
+    reducer = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, random_state=SEED)
+    X_umap = reducer.fit_transform(X_layer)
+    
+    ax = axes[1]
+    for label, color, name in [(1, '#FF6B6B', 'Sycophantic'), (0, '#4ECDC4', 'Honest')]:
+        mask = y_layer == label
+        ax.scatter(X_umap[mask, 0], X_umap[mask, 1], c=color, alpha=0.6, s=40, label=name)
+    
+    ax.set_xlabel('UMAP 1', fontsize=12)
+    ax.set_ylabel('UMAP 2', fontsize=12)
+    ax.set_title(f'UMAP Visualization (Layer {analysis_layer})', fontsize=14)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "09_manifold_visualization.png", dpi=150)
+plt.close()
+print("Saved: 09_manifold_visualization.png")
+
+# =============================================================================
+# SECTION 13: Cluster Analysis
+# =============================================================================
+print("\n" + "="*60)
+print("SECTION 13: Cluster Analysis")
+print("="*60)
+
+# Is sycophancy one cluster or multiple?
+# Test on each class separately
+
+def analyze_clusters(X, name, max_k=6):
+    """Analyze clustering structure using K-means with silhouette scores."""
+    silhouettes = []
+    inertias = []
+    
+    for k in range(2, max_k + 1):
+        kmeans = KMeans(n_clusters=k, random_state=SEED, n_init=10)
+        labels = kmeans.fit_predict(X)
+        silhouettes.append(silhouette_score(X, labels))
+        inertias.append(kmeans.inertia_)
+    
+    return silhouettes, inertias
+
+print("Analyzing sycophantic cluster structure...")
+syco_sil, syco_inertia = analyze_clusters(X_syco, "Syco")
+print("Analyzing honest cluster structure...")
+honest_sil, honest_inertia = analyze_clusters(X_honest, "Honest")
+
+# Plot 10: Cluster analysis
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+# Silhouette scores
+ax1 = axes[0]
+ks = range(2, 7)
+ax1.plot(ks, syco_sil, 'r-o', label='Sycophantic', markersize=6)
+ax1.plot(ks, honest_sil, 'b-o', label='Honest', markersize=6)
+ax1.set_xlabel('Number of Clusters (k)', fontsize=12)
+ax1.set_ylabel('Silhouette Score', fontsize=12)
+ax1.set_title('Cluster Quality by K', fontsize=14)
+ax1.legend()
+ax1.grid(True, alpha=0.3)
+
+# Add interpretation
+best_k_syco = np.argmax(syco_sil) + 2
+best_k_honest = np.argmax(honest_sil) + 2
+ax1.axvline(x=best_k_syco, color='r', linestyle='--', alpha=0.5)
+ax1.axvline(x=best_k_honest, color='b', linestyle='--', alpha=0.5)
+
+# Elbow plot
+ax2 = axes[1]
+ax2.plot(ks, syco_inertia, 'r-o', label='Sycophantic', markersize=6)
+ax2.plot(ks, honest_inertia, 'b-o', label='Honest', markersize=6)
+ax2.set_xlabel('Number of Clusters (k)', fontsize=12)
+ax2.set_ylabel('Inertia (Within-cluster SS)', fontsize=12)
+ax2.set_title('Elbow Plot', fontsize=14)
+ax2.legend()
+ax2.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "10_cluster_analysis.png", dpi=150)
+plt.close()
+print(f"Saved: 10_cluster_analysis.png")
+print(f"  Best k for sycophantic: {best_k_syco} (silhouette={syco_sil[best_k_syco-2]:.3f})")
+print(f"  Best k for honest: {best_k_honest} (silhouette={honest_sil[best_k_honest-2]:.3f})")
+
+# =============================================================================
+# SECTION 14: Per-class Cluster Visualization
+# =============================================================================
+print("\n" + "="*60)
+print("SECTION 14: Per-class Cluster Structure")
+print("="*60)
+
+# Visualize clusters in t-SNE space
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+# Sycophantic clusters
+kmeans_syco = KMeans(n_clusters=best_k_syco, random_state=SEED, n_init=10)
+syco_labels = kmeans_syco.fit_predict(X_syco)
+
+# Project to 2D
+tsne_syco = TSNE(n_components=2, perplexity=min(30, len(X_syco)-1), random_state=SEED, n_iter=500)
+X_syco_2d = tsne_syco.fit_transform(X_syco[:100])  # Subset for speed
+
+ax = axes[0]
+scatter = ax.scatter(X_syco_2d[:, 0], X_syco_2d[:, 1], c=syco_labels[:100], cmap='Set1', alpha=0.7, s=50)
+ax.set_xlabel('t-SNE 1', fontsize=12)
+ax.set_ylabel('t-SNE 2', fontsize=12)
+ax.set_title(f'Sycophantic: {best_k_syco} Clusters', fontsize=14)
+ax.grid(True, alpha=0.3)
+
+# Honest clusters
+kmeans_honest = KMeans(n_clusters=best_k_honest, random_state=SEED, n_init=10)
+honest_labels = kmeans_honest.fit_predict(X_honest)
+
+tsne_honest = TSNE(n_components=2, perplexity=min(30, len(X_honest)-1), random_state=SEED, n_iter=500)
+X_honest_2d = tsne_honest.fit_transform(X_honest[:100])
+
+ax = axes[1]
+scatter = ax.scatter(X_honest_2d[:, 0], X_honest_2d[:, 1], c=honest_labels[:100], cmap='Set1', alpha=0.7, s=50)
+ax.set_xlabel('t-SNE 1', fontsize=12)
+ax.set_ylabel('t-SNE 2', fontsize=12)
+ax.set_title(f'Honest: {best_k_honest} Clusters', fontsize=14)
+ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "11_per_class_clusters.png", dpi=150)
+plt.close()
+print("Saved: 11_per_class_clusters.png")
+
+# =============================================================================
+# SECTION 15: Summary Statistics
 # =============================================================================
 print("\n" + "="*60)
 print("SUMMARY")
@@ -501,6 +776,12 @@ summary = {
     "pca_90_components": int(n_90),
     "pca_95_components": int(n_95),
     "dprime": float(d_prime),
+    "intrinsic_dim_mle_syco": float(id_mle_syco),
+    "intrinsic_dim_mle_honest": float(id_mle_honest),
+    "intrinsic_dim_2nn_syco": float(id_2nn_syco),
+    "intrinsic_dim_2nn_honest": float(id_2nn_honest),
+    "best_k_syco": int(best_k_syco),
+    "best_k_honest": int(best_k_honest),
     "layer_aurocs": [float(a) for a in layer_aurocs],
 }
 
@@ -508,29 +789,59 @@ with open(OUTPUT_DIR / "analysis_summary.json", "w") as f:
     json.dump(summary, f, indent=2)
 
 print(f"""
-Key Findings:
-=============
+Key Geometric Findings:
+=======================
 1. Best layer for detection: {best_layer} (AUROC: {layer_aurocs[best_layer]:.3f})
-2. Components for 90% variance: {n_90} of {hidden_dim}
-3. Separation d': {d_prime:.2f}
-4. Detection works well but is DISTRIBUTED across many dimensions
+2. Separation d': {d_prime:.2f}
 
-Implications for Steering:
+PCA Analysis:
+-------------
+- Components for 90% variance: {n_90} of {hidden_dim}
+- Components for 95% variance: {n_95} of {hidden_dim}
+
+Intrinsic Dimensionality:
+-------------------------
+- MLE: Syco={id_mle_syco:.1f}, Honest={id_mle_honest:.1f}
+- Two-NN: Syco={id_2nn_syco:.1f}, Honest={id_2nn_honest:.1f}
+- If ID >> 1, sycophancy is multi-dimensional → single-direction steering fails
+
+Cluster Structure:
+------------------
+- Sycophantic: {best_k_syco} clusters (silhouette={syco_sil[best_k_syco-2]:.3f})
+- Honest: {best_k_honest} clusters (silhouette={honest_sil[best_k_honest-2]:.3f})
+- Multiple clusters → context-dependent sycophancy modes
+
+IMPLICATIONS FOR STEERING:
 ==========================
-- If PCA shows high dimensionality (many components needed), 
-  single-direction steering is unlikely to work
-- d' < 2 suggests overlapping distributions → steering may affect 
-  honest responses too
-- Direction similarity across layers tells us if multi-layer 
-  steering should use same or different directions
+1. If intrinsic dim > 5: Need subspace/manifold approach, not single direction
+2. If clusters > 1: Different contexts may need different steering vectors  
+3. If d' < 2: Steering may cause collateral damage to honest responses
 
-Recommendations:
+RECOMMENDATIONS:
 ================
-1. For detection: Use DiffMean at layer {best_layer} (sufficient)
-2. For steering: Consider subspace methods (PLS with r=3-5)
-3. If subspace fails: Need learned/gradient-based steering
+1. Detection: DiffMean at layer {best_layer} is sufficient (AUROC {layer_aurocs[best_layer]:.3f})
+2. Steering (if ID > 5): Use PLS with r={min(int(id_mle_syco), 10)} components
+3. Steering (if clusters > 2): Consider context-conditioned steering
 
 All plots saved to: {OUTPUT_DIR}/
 """)
 
+print("=" * 60)
+print("PLOTS GENERATED:")
+print("=" * 60)
+print("""
+01_layer_auroc.png          - Detection by layer
+02_pca_spectrum.png         - Eigenvalue spectrum  
+03_2d_projection.png        - 2D scatter (Syco vs Honest)
+04_projection_distribution.png - Projection distributions
+05_method_comparison.png    - DiffMean vs PLS vs LDA
+06_direction_similarity.png - Cross-layer direction consistency
+07_projection_magnitude.png - Magnitude across layers
+08_intrinsic_dimensionality.png - ID estimates
+09_manifold_visualization.png - t-SNE/UMAP
+10_cluster_analysis.png     - Silhouette & elbow
+11_per_class_clusters.png   - Cluster visualization
+""")
+
 print("Analysis complete!")
+
