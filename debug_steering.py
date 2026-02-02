@@ -102,19 +102,39 @@ def diagnose_steering(
         inputs = tokenizer(full_text, return_tensors="pt", truncation=True).to(device)
         acts = gather_residual_activations(model, layer_idx, inputs)
         
+        # Debug: print shape on first iteration
+        if i == 0:
+            print(f"   Activation tensor shape: {acts.shape}")
+        
+        # Handle different shapes: [batch, seq, hidden] or [seq, hidden]
+        if acts.dim() == 3:
+            act_seq = acts[0]  # [seq, hidden]
+        else:
+            act_seq = acts  # Already [seq, hidden]
+        
         # Project onto direction
-        v = torch.tensor(direction, dtype=acts.dtype, device=device)
-        projections = torch.matmul(acts[0], v)  # [seq_len]
+        v = torch.tensor(direction, dtype=act_seq.dtype, device=device)
+        
+        if act_seq.shape[0] == 0:
+            print(f"   Warning: Empty sequence at sample {i}")
+            continue
+            
+        projections = torch.matmul(act_seq, v)  # [seq_len]
         last_token_proj = projections[-1].item()
         proj_magnitudes.append(last_token_proj)
     
-    mean_proj = np.mean(proj_magnitudes)
-    std_proj = np.std(proj_magnitudes)
+    if not proj_magnitudes:
+        print("   ERROR: Could not get any projections. Something is wrong with activation extraction.")
+        mean_proj = 1.0  # Default value
+    else:
+        mean_proj = np.mean(proj_magnitudes)
+        std_proj = np.std(proj_magnitudes)
+        
+        print(f"   Projection at last token (n={len(proj_magnitudes)}):")
+        print(f"     Mean: {mean_proj:.4f}")
+        print(f"     Std:  {std_proj:.4f}")
+        print(f"     Range: [{min(proj_magnitudes):.4f}, {max(proj_magnitudes):.4f}]")
     
-    print(f"   Projection at last token (n={n_samples}):")
-    print(f"     Mean: {mean_proj:.4f}")
-    print(f"     Std:  {std_proj:.4f}")
-    print(f"     Range: [{min(proj_magnitudes):.4f}, {max(proj_magnitudes):.4f}]")
     print(f"\n   Recommended alpha values:")
     print(f"     For subtraction: α = {abs(mean_proj):.1f} to {abs(mean_proj) * 2:.1f}")
     print(f"     For clamping (projection-scaled): α = 1.0")
