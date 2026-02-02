@@ -144,7 +144,7 @@ def run_alpha_sweep(
             alpha=alpha,
             intervention_type=intervention_type,
         )
-        steering = ActivationSteering(model, config)
+        steering = ActivationSteering(model, config, debug=False)  # Enable debug for first run
         
         rate, _ = measure_sycophancy_rate_with_steering(
             model, tokenizer, test_examples, steering, device
@@ -262,7 +262,7 @@ def main(
         alpha=alpha,
         intervention_type=intervention_type,
     )
-    steering = ActivationSteering(model, config)
+    steering = ActivationSteering(model, config, debug=True)  # Debug enabled for diagnostics
     
     # Measure sycophancy rate with steering
     print("\n" + "=" * 60)

@@ -46,19 +46,24 @@ class ActivationSteering:
     
     Uses forward hooks to intercept and modify hidden states during generation.
     This approach follows the patterns from AxBench/pyvene for intervention.
+    
+    IMPORTANT: The direction vector is normalized, so alpha should be calibrated
+    to the actual projection magnitudes. Use debug mode to check hook activation.
     """
     
-    def __init__(self, model, config: SteeringConfig):
+    def __init__(self, model, config: SteeringConfig, debug: bool = False):
         """
         Initialize steering with model and configuration.
         
         Args:
             model: HuggingFace model
             config: Steering configuration
+            debug: If True, print debug info when hooks fire
         """
         self.model = model
         self.config = config
         self.device = next(model.parameters()).device
+        self.debug = debug
         
         # Convert direction to tensor
         self.direction_tensor = torch.tensor(
@@ -70,6 +75,7 @@ class ActivationSteering:
         # Handle for the registered hook
         self._hook_handle = None
         self._is_active = False
+        self._intervention_count = 0  # Track how many times hook fires
     
     def _subtraction_intervention(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """
@@ -77,6 +83,9 @@ class ActivationSteering:
         
         Subtracts the scaled sycophancy direction from activations,
         effectively reducing sycophantic behavior.
+        
+        NOTE: With normalized v, alpha should typically be 10-50x the 
+        expected projection magnitude to have significant effect.
         """
         v = self.direction_tensor.to(hidden_states.dtype)
         # Broadcast: hidden_states is [batch, seq, hidden], v is [hidden]
@@ -84,10 +93,10 @@ class ActivationSteering:
     
     def _clamping_intervention(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """
-        Clamping intervention: h' = h - (h·v)·v
+        Clamping intervention: h' = h - α·(h·v)·v
         
-        Projects out the sycophancy direction completely from activations.
-        More aggressive than subtraction - removes all projection onto direction.
+        Projects out the sycophancy direction from activations.
+        Alpha controls fraction of direction to remove (1.0 = complete removal).
         """
         v = self.direction_tensor.to(hidden_states.dtype)
         # Compute projection coefficient: (h·v) for each position
@@ -97,7 +106,7 @@ class ActivationSteering:
         # Scale by alpha to control intervention strength
         projection_coef = projection_coef * self.config.alpha
         
-        # Reconstruct: h - (h·v)·v
+        # Reconstruct: h - α·(h·v)·v
         # projection_coef: [batch, seq], v: [hidden]
         correction = projection_coef.unsqueeze(-1) * v  # [batch, seq, hidden]
         return hidden_states - correction
@@ -106,21 +115,36 @@ class ActivationSteering:
         """
         Addition intervention: h' = h + α·v
         
-        Adds the scaled anti-sycophancy direction (negative of sycophancy direction)
-        to amplify truthful behavior. Note: direction should be negated if originally
-        computed as sycophantic - non-sycophantic.
+        Adds the sycophancy direction (use negative alpha to subtract).
+        This can be used to verify the direction is correct by amplifying
+        sycophancy before attempting to reduce it.
         """
         v = self.direction_tensor.to(hidden_states.dtype)
-        # For addition, we ADD the direction (could negate alpha to subtract)
         return hidden_states + self.config.alpha * v
+    
+    def _projection_scaled_subtraction(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        NEW: Projection-scaled subtraction: h' = h - α·(h·v)·v
+        
+        Unlike simple subtraction, this scales the intervention by how much
+        the activation projects onto the direction. More principled approach.
+        
+        With α=1.0, this completely removes the sycophancy component.
+        With α=0.5, this removes half of it.
+        """
+        v = self.direction_tensor.to(hidden_states.dtype)
+        projection_coef = torch.matmul(hidden_states, v)  # [batch, seq]
+        correction = (projection_coef * self.config.alpha).unsqueeze(-1) * v
+        return hidden_states - correction
     
     def _create_hook(self) -> Callable:
         """Create the forward hook function for intervention."""
         
         intervention_fn = {
             "subtraction": self._subtraction_intervention,
-            "clamping": self._clamping_intervention,
+            "clamping": self._clamping_intervention,  # Alias for projection-scaled
             "addition": self._addition_intervention,
+            "projection_scaled": self._projection_scaled_subtraction,
         }[self.config.intervention_type]
         
         def hook(module, inputs, outputs):
@@ -133,10 +157,30 @@ class ActivationSteering:
             if not self._is_active:
                 return outputs
             
+            self._intervention_count += 1
+            
             # Handle different output formats
             if isinstance(outputs, tuple):
                 hidden_states = outputs[0]
+                
+                if self.debug and self._intervention_count <= 2:
+                    # Debug: show projection before and after
+                    v = self.direction_tensor.to(hidden_states.dtype)
+                    proj_before = torch.matmul(hidden_states, v)
+                    print(f"[DEBUG Steering] Hook #{self._intervention_count}")
+                    print(f"  Layer: {self.config.layer_idx}")
+                    print(f"  Hidden states shape: {hidden_states.shape}")
+                    print(f"  Projection onto direction (last token): {proj_before[0, -1].item():.4f}")
+                    print(f"  Alpha: {self.config.alpha}")
+                    print(f"  Intervention type: {self.config.intervention_type}")
+                
                 modified = intervention_fn(hidden_states)
+                
+                if self.debug and self._intervention_count <= 2:
+                    proj_after = torch.matmul(modified, self.direction_tensor.to(modified.dtype))
+                    print(f"  Projection AFTER (last token): {proj_after[0, -1].item():.4f}")
+                    print(f"  Change: {(proj_after[0, -1] - proj_before[0, -1]).item():.4f}")
+                
                 return (modified,) + outputs[1:]
             else:
                 return intervention_fn(outputs)
@@ -156,6 +200,10 @@ class ActivationSteering:
         target_layer = self.model.model.layers[self.config.layer_idx]
         self._hook_handle = target_layer.register_forward_hook(self._create_hook())
         self._is_active = True
+        self._intervention_count = 0
+        
+        if self.debug:
+            print(f"[DEBUG] Steering activated on layer {self.config.layer_idx}")
     
     def deactivate(self) -> None:
         """
@@ -163,6 +211,9 @@ class ActivationSteering:
         
         Call this after inference/generation to clean up.
         """
+        if self.debug and self._intervention_count > 0:
+            print(f"[DEBUG] Steering deactivated. Total interventions: {self._intervention_count}")
+        
         if self._hook_handle is not None:
             self._hook_handle.remove()
             self._hook_handle = None

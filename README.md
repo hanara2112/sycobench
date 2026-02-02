@@ -13,20 +13,20 @@ python run_layer_sweep.py --model Qwen/Qwen2.5-0.5B-Instruct --train-instances 2
 
 # 3. Run detection benchmark
 python run_detection.py \
-    --model Qwen/Qwen2.5-0.5B-Instruct \
+    --model Qwen/Qwen2.5-7B-Instruct \
     --train-file data/sycophancy/political/seed_0/train.jsonl \
     --test-file data/sycophancy/political/seed_0/test.jsonl \
-    --method diffmean --layer 12
+    --method diffmean --layer 21
 ```
 
 ## Key Results
 
-| Method | Test AUROC | Notes |
-|--------|------------|-------|
-| Random Baseline | ~50% | Sanity check |
-| LLM-as-Judge | 0.69 | Black-box baseline |
-| Linear Probe | 0.88-0.96 | White-box |
-| **Diff-in-Means** | **0.90-0.98** | Best performing |
+| Method                  | Test AUROC          | Notes              |
+| ----------------------- | ------------------- | ------------------ |
+| Random Baseline         | ~50%                | Sanity check       |
+| LLM-as-Judge            | 0.69                | Black-box baseline |
+| Linear Probe            | 0.88-0.96           | White-box          |
+| **Diff-in-Means** | **0.90-0.98** | Best performing    |
 
 ---
 
@@ -51,6 +51,7 @@ python run_detection.py \
 ### Generalization Experiments
 
 **OOD Generalization** - Train on multiple domains, test on held-out domain:
+
 ```bash
 python run_ood_eval.py --model Qwen/Qwen2.5-3B-Instruct
 # Train: political + philpapers → Test: nlp_survey
@@ -58,6 +59,7 @@ python run_ood_eval.py --model Qwen/Qwen2.5-3B-Instruct
 ```
 
 **Cross-Concept Transfer** - Test if sycophancy ≠ deception:
+
 ```bash
 python run_cross_concept.py --model Qwen/Qwen2.5-3B-Instruct
 # Train sycophancy → Test deception (should FAIL)
@@ -65,6 +67,7 @@ python run_cross_concept.py --model Qwen/Qwen2.5-3B-Instruct
 ```
 
 **Direction Similarity** - Verify directions are distinct:
+
 ```bash
 python run_direction_sim.py --model Qwen/Qwen2.5-3B-Instruct
 # Expected: cos(syco, deception) < 0.3
@@ -128,26 +131,26 @@ sycobench/
 
 ## Datasets
 
-| Concept | Setting | Train | Test |
-|---------|---------|-------|------|
-| Sycophancy | political | 1000 | 1000 |
-| Sycophancy | philpapers | 1000 | 1000 |
-| Sycophancy | nlp_survey | 1000 | 1000 |
-| Sycophancy | cross_domain | 1000 | 1000 |
-| Deception | truthfulqa | 600 | 600 |
+| Concept    | Setting      | Train | Test |
+| ---------- | ------------ | ----- | ---- |
+| Sycophancy | political    | 1000  | 1000 |
+| Sycophancy | philpapers   | 1000  | 1000 |
+| Sycophancy | nlp_survey   | 1000  | 1000 |
+| Sycophancy | cross_domain | 1000  | 1000 |
+| Deception  | truthfulqa   | 600   | 600  |
 
 ---
 
 ## Common Arguments
 
-| Argument | Description | Default |
-|----------|-------------|---------|
-| `--model` | HuggingFace model | `Qwen/Qwen2.5-3B-Instruct` |
-| `--seed` | Random seed | 42 |
-| `--train-instances` | Training size | 2000 |
-| `--test-instances` | Test size | 1000 |
-| `--layer` | Layer index | Auto-select |
-| `--output-dir` | Results directory | `results` |
+| Argument              | Description       | Default                      |
+| --------------------- | ----------------- | ---------------------------- |
+| `--model`           | HuggingFace model | `Qwen/Qwen2.5-3B-Instruct` |
+| `--seed`            | Random seed       | 42                           |
+| `--train-instances` | Training size     | 2000                         |
+| `--test-instances`  | Test size         | 1000                         |
+| `--layer`           | Layer index       | Auto-select                  |
+| `--output-dir`      | Results directory | `results`                  |
 
 ### Supported Models
 
