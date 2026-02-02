@@ -129,7 +129,7 @@ def extract_activations_all_layers(pairs, label_type="syco", n_samples=50):
         # Extract last token from each layer
         for layer_idx in range(n_layers):
             hidden = outputs.hidden_states[layer_idx + 1]  # +1 to skip embedding
-            last_token_act = hidden[0, -1, :].cpu().numpy()
+            last_token_act = hidden[0, -1, :].float().cpu().numpy()  # .float() for bfloat16 compatibility
             all_layer_acts[layer_idx].append(last_token_act)
     
     return {l: np.array(acts) for l, acts in all_layer_acts.items()}
