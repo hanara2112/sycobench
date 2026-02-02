@@ -113,31 +113,42 @@ print("SECTION 3: Extracting Activations (All Layers)")
 print("="*60)
 
 def extract_activations_all_layers(pairs, label_type="syco", n_samples=50):
-    """Extract last-token activations from all layers."""
+    """
+    Extract PROMPT's last-token activations from all layers.
+    
+    We extract at the prompt's last token (model's decision point) to capture
+    the CONCEPT of sycophancy, not the trivial token differences in answers.
+    """
     all_layer_acts = {l: [] for l in range(n_layers)}
     
     for pair in tqdm(pairs[:n_samples], desc=f"Extracting {label_type}"):
+        # Build prompt only (without the answer)
         prompt = build_chat_prompt(tokenizer, pair["question"])
         answer = pair["syco_answer"] if label_type == "syco" else pair["honest_answer"]
-        full_text = prompt + answer
         
+        # Tokenize full text to simulate complete context
+        full_text = prompt + answer
         inputs = tokenizer(full_text, return_tensors="pt", truncation=True).to(device)
+        
+        # Find where the prompt ends (position of last prompt token)
+        prompt_inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
+        prompt_length = prompt_inputs["input_ids"].shape[1]
         
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
         
-        # Extract last token from each layer
+        # Extract at PROMPT's last token (model's decision point, before answer)
         for layer_idx in range(n_layers):
             hidden = outputs.hidden_states[layer_idx + 1]  # +1 to skip embedding
-            last_token_act = hidden[0, -1, :].float().cpu().numpy()  # .float() for bfloat16 compatibility
-            all_layer_acts[layer_idx].append(last_token_act)
+            decision_token_act = hidden[0, prompt_length - 1, :].float().cpu().numpy()
+            all_layer_acts[layer_idx].append(decision_token_act)
     
     return {l: np.array(acts) for l, acts in all_layer_acts.items()}
 
 # Extract for both classes
-print("Extracting sycophantic activations...")
+print("Extracting sycophantic activations (at prompt's last token)...")
 syco_acts = extract_activations_all_layers(train_pairs, "syco", N_TRAIN)
-print("Extracting honest activations...")
+print("Extracting honest activations (at prompt's last token)...")
 honest_acts = extract_activations_all_layers(train_pairs, "honest", N_TRAIN)
 
 # =============================================================================
