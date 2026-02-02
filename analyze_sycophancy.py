@@ -112,44 +112,52 @@ print("\n" + "="*60)
 print("SECTION 3: Extracting Activations (All Layers)")
 print("="*60)
 
-def extract_activations_all_layers(pairs, label_type="syco", n_samples=50):
+def extract_activations_all_layers(pairs, label_type="syco", n_samples=50, answer_offset=3):
     """
-    Extract PROMPT's last-token activations from all layers.
+    Extract activations from EARLY answer tokens (after prompt).
     
-    We extract at the prompt's last token (model's decision point) to capture
-    the CONCEPT of sycophancy, not the trivial token differences in answers.
+    We extract a few tokens INTO the answer (answer_offset) where the 
+    sycophancy/honesty decision becomes visible in the representations.
+    
+    At the prompt's last token, both classes have identical activations.
+    But after 1-3 answer tokens, the model has committed to agreeing/disagreeing.
     """
     all_layer_acts = {l: [] for l in range(n_layers)}
     
     for pair in tqdm(pairs[:n_samples], desc=f"Extracting {label_type}"):
-        # Build prompt only (without the answer)
         prompt = build_chat_prompt(tokenizer, pair["question"])
         answer = pair["syco_answer"] if label_type == "syco" else pair["honest_answer"]
         
-        # Tokenize full text to simulate complete context
+        # Tokenize full text
         full_text = prompt + answer
         inputs = tokenizer(full_text, return_tensors="pt", truncation=True).to(device)
         
-        # Find where the prompt ends (position of last prompt token)
+        # Find where the prompt ends
         prompt_inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
         prompt_length = prompt_inputs["input_ids"].shape[1]
+        
+        # Position to extract: few tokens INTO the answer
+        # This is where sycophancy decision becomes visible
+        total_length = inputs["input_ids"].shape[1]
+        extract_pos = min(prompt_length + answer_offset, total_length - 1)
         
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
         
-        # Extract at PROMPT's last token (model's decision point, before answer)
+        # Extract at early answer position (where decision is visible)
         for layer_idx in range(n_layers):
-            hidden = outputs.hidden_states[layer_idx + 1]  # +1 to skip embedding
-            decision_token_act = hidden[0, prompt_length - 1, :].float().cpu().numpy()
-            all_layer_acts[layer_idx].append(decision_token_act)
+            hidden = outputs.hidden_states[layer_idx + 1]
+            answer_token_act = hidden[0, extract_pos, :].float().cpu().numpy()
+            all_layer_acts[layer_idx].append(answer_token_act)
     
     return {l: np.array(acts) for l, acts in all_layer_acts.items()}
 
-# Extract for both classes
-print("Extracting sycophantic activations (at prompt's last token)...")
-syco_acts = extract_activations_all_layers(train_pairs, "syco", N_TRAIN)
-print("Extracting honest activations (at prompt's last token)...")
-honest_acts = extract_activations_all_layers(train_pairs, "honest", N_TRAIN)
+# Extract for both classes (at 3 tokens into answer)
+ANSWER_OFFSET = 3  # Extract 3 tokens into the answer
+print(f"Extracting sycophantic activations (at answer token +{ANSWER_OFFSET})...")
+syco_acts = extract_activations_all_layers(train_pairs, "syco", N_TRAIN, ANSWER_OFFSET)
+print(f"Extracting honest activations (at answer token +{ANSWER_OFFSET})...")
+honest_acts = extract_activations_all_layers(train_pairs, "honest", N_TRAIN, ANSWER_OFFSET)
 
 # =============================================================================
 # SECTION 4: Layer-wise Detection Performance
