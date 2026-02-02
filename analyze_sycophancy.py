@@ -154,10 +154,11 @@ for layer_idx in tqdm(range(n_layers), desc="Layer sweep"):
     X = np.vstack([syco_acts[layer_idx], honest_acts[layer_idx]])
     y = np.array([1] * len(syco_acts[layer_idx]) + [0] * len(honest_acts[layer_idx]))
     
-    # Train/test split (simple)
-    split = int(0.7 * len(X))
-    X_train, X_test = X[:split], X[split:]
-    y_train, y_test = y[:split], y[split:]
+    # Train/test split (stratified to ensure both classes appear)
+    from sklearn.model_selection import train_test_split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=SEED, stratify=y
+    )
     
     # Diff-in-means direction
     pos_mean = X_train[y_train == 1].mean(axis=0)
@@ -613,7 +614,7 @@ if not HAS_UMAP:
 
 # t-SNE
 print("Running t-SNE...")
-tsne = TSNE(n_components=2, perplexity=30, random_state=SEED, n_iter=1000)
+tsne = TSNE(n_components=2, perplexity=30, random_state=SEED)
 X_tsne = tsne.fit_transform(X_layer)
 
 ax = axes[0]
@@ -729,7 +730,7 @@ kmeans_syco = KMeans(n_clusters=best_k_syco, random_state=SEED, n_init=10)
 syco_labels = kmeans_syco.fit_predict(X_syco)
 
 # Project to 2D
-tsne_syco = TSNE(n_components=2, perplexity=min(30, len(X_syco)-1), random_state=SEED, n_iter=500)
+tsne_syco = TSNE(n_components=2, perplexity=min(30, len(X_syco)-1), random_state=SEED)
 X_syco_2d = tsne_syco.fit_transform(X_syco[:100])  # Subset for speed
 
 ax = axes[0]
@@ -743,7 +744,7 @@ ax.grid(True, alpha=0.3)
 kmeans_honest = KMeans(n_clusters=best_k_honest, random_state=SEED, n_init=10)
 honest_labels = kmeans_honest.fit_predict(X_honest)
 
-tsne_honest = TSNE(n_components=2, perplexity=min(30, len(X_honest)-1), random_state=SEED, n_iter=500)
+tsne_honest = TSNE(n_components=2, perplexity=min(30, len(X_honest)-1), random_state=SEED)
 X_honest_2d = tsne_honest.fit_transform(X_honest[:100])
 
 ax = axes[1]
