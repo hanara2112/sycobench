@@ -334,14 +334,17 @@ honest_proj = proj_on_dir[y_layer == 0]
 ax.hist(honest_proj, bins=30, alpha=0.6, color='#4ECDC4', label='Honest', density=True)
 ax.hist(syco_proj, bins=30, alpha=0.6, color='#FF6B6B', label='Sycophantic', density=True)
 
-# KDE overlays
-if len(syco_proj) > 1 and len(honest_proj) > 1:
-    x_range = np.linspace(min(honest_proj.min(), syco_proj.min()), 
-                          max(honest_proj.max(), syco_proj.max()), 100)
-    kde_syco = gaussian_kde(syco_proj)
-    kde_honest = gaussian_kde(honest_proj)
-    ax.plot(x_range, kde_syco(x_range), color='red', linewidth=2)
-    ax.plot(x_range, kde_honest(x_range), color='teal', linewidth=2)
+# KDE overlays (only if data has variance)
+if len(syco_proj) > 1 and len(honest_proj) > 1 and syco_proj.std() > 1e-10 and honest_proj.std() > 1e-10:
+    try:
+        x_range = np.linspace(min(honest_proj.min(), syco_proj.min()), 
+                              max(honest_proj.max(), syco_proj.max()), 100)
+        kde_syco = gaussian_kde(syco_proj)
+        kde_honest = gaussian_kde(honest_proj)
+        ax.plot(x_range, kde_syco(x_range), color='red', linewidth=2)
+        ax.plot(x_range, kde_honest(x_range), color='teal', linewidth=2)
+    except Exception as e:
+        print(f"  KDE skipped (low variance): {e}")
 
 ax.set_xlabel('Projection onto Sycophancy Direction', fontsize=12)
 ax.set_ylabel('Density', fontsize=12)
