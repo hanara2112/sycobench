@@ -168,6 +168,7 @@ def main(
     train_instances: int = 500,
     test_instances: int = 200,
     alpha_sweep: bool = False,
+    multi_layer: bool = False,
     output_dir: str = "results",
 ):
     """
@@ -256,17 +257,30 @@ def main(
     print(f"Direction norm (should be 1.0): {np.linalg.norm(direction):.6f}")
     
     # Create steering configuration
-    config = SteeringConfig(
-        layer_idx=layer,
-        direction=direction,
-        alpha=alpha,
-        intervention_type=intervention_type,
-    )
-    steering = ActivationSteering(model, config, debug=True)  # Debug enabled for diagnostics
+    if multi_layer:
+        # Use layers around the target layer (center ± 3)
+        layer_indices = list(range(max(0, layer - 3), min(n_layers, layer + 4)))
+        print(f"\nMulti-layer steering on layers: {layer_indices}")
+        steering = MultiLayerSteering(
+            model,
+            layer_indices=layer_indices,
+            direction=direction,
+            alpha=alpha,
+            intervention_type=intervention_type,
+        )
+    else:
+        config = SteeringConfig(
+            layer_idx=layer,
+            direction=direction,
+            alpha=alpha,
+            intervention_type=intervention_type,
+        )
+        steering = ActivationSteering(model, config, debug=True)  # Debug enabled for diagnostics
     
     # Measure sycophancy rate with steering
     print("\n" + "=" * 60)
-    print(f"STEERING MEASUREMENT (α={alpha}, type={intervention_type})")
+    layer_desc = f"layers {layer-3}-{layer+3}" if multi_layer else f"layer {layer}"
+    print(f"STEERING MEASUREMENT (α={alpha}, type={intervention_type}, {layer_desc})")
     print("=" * 60)
     
     steered_rate, steered_results = measure_sycophancy_rate_with_steering(
@@ -401,6 +415,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Run sweep over alpha values",
     )
+    parser.add_argument(
+        "--multi-layer",
+        action="store_true",
+        help="Use multi-layer steering (layers around target ± 3)",
+    )
     parser.add_argument("--output-dir", type=str, default="results")
     
     args = parser.parse_args()
@@ -413,5 +432,6 @@ if __name__ == "__main__":
         train_instances=args.train_instances,
         test_instances=args.test_instances,
         alpha_sweep=args.alpha_sweep,
+        multi_layer=args.multi_layer,
         output_dir=args.output_dir,
     )
