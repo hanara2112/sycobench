@@ -56,6 +56,7 @@ print("SECTION 1: Loading Data")
 print("="*60)
 
 from datasets import load_dataset
+from utils import create_contrastive_instances
 
 dataset = load_dataset(
     "Anthropic/model-written-evals",
@@ -63,20 +64,18 @@ dataset = load_dataset(
     split="train",
 )
 
-def create_pairs(data, n_prompts):
-    pairs = []
-    for i, item in enumerate(data):
-        if i >= n_prompts:
-            break
-        pairs.append({
-            "question": item["question"],
-            "syco_answer": item["answer_matching_behavior"],
-            "honest_answer": item["answer_not_matching_behavior"],
-        })
-    return pairs
+# Shuffle and split like the original layer sweep
+dataset = dataset.shuffle(seed=SEED)
 
-pairs = create_pairs(dataset, N_SAMPLES)
-print(f"Loaded {len(pairs)} pairs")
+# Use DIFFERENT prompts for syco vs honest (this is the key!)
+# Each prompt generates one syco AND one honest instance
+# We split prompts, not instances
+n_prompts = N_SAMPLES  # Number of prompts to use
+examples = dataset.select(range(n_prompts))
+
+# Create contrastive instances (each prompt → 1 syco + 1 honest)
+instances = create_contrastive_instances(examples, "data")
+print(f"Loaded {len(instances)} instances from {n_prompts} prompts")
 
 # =============================================================================
 # SECTION 2: Model Loading
@@ -97,34 +96,56 @@ print("\n" + "="*60)
 print("SECTION 3: Extract Multi-Layer Activations")
 print("="*60)
 
-def extract_multi_layer_activations(pairs, label_type, layers_to_extract):
-    """Extract activations from multiple layers for multi-layer analysis."""
-    layer_acts = {l: [] for l in layers_to_extract}
+from utils import gather_residual_activations
+
+def extract_multi_layer_activations(data, layers_to_extract):
+    """
+    Extract activations from multiple layers using the SAME method as run_layer_sweep.
     
-    for pair in tqdm(pairs, desc=f"Extracting {label_type}"):
-        prompt = build_chat_prompt(tokenizer, pair["question"])
-        answer = pair["syco_answer"] if label_type == "syco" else pair["honest_answer"]
-        full_text = prompt + answer
+    Uses gather_residual_activations (hook-based) and last token extraction.
+    """
+    layer_acts = {l: {"pos": [], "neg": []} for l in layers_to_extract}
+    
+    for item in tqdm(data, desc="Extracting"):
+        prompt = build_chat_prompt(tokenizer, item["prompt"])
+        full_text = prompt + item["completion"]
         
-        inputs = tokenizer(full_text, return_tensors="pt", truncation=True).to(device)
+        inputs = tokenizer(full_text, return_tensors="pt", truncation=True, add_special_tokens=True)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
         
-        with torch.no_grad():
-            outputs = model(**inputs, output_hidden_states=True)
-        
-        # Extract LAST token (contains full context)
         for layer_idx in layers_to_extract:
-            hidden = outputs.hidden_states[layer_idx + 1]
-            act = hidden[0, -1, :].float().cpu().numpy()
-            layer_acts[layer_idx].append(act)
+            activations = gather_residual_activations(model, layer_idx, inputs)
+            
+            # Last token representation (same as run_layer_sweep)
+            if activations.dim() == 2:
+                act = activations[-1, :].float().cpu().numpy()
+            else:
+                act = activations[0, -1, :].float().cpu().numpy()
+            
+            if item["label"] == 1:
+                layer_acts[layer_idx]["pos"].append(act)
+            else:
+                layer_acts[layer_idx]["neg"].append(act)
     
-    return {l: np.array(acts) for l, acts in layer_acts.items()}
+    # Convert to arrays
+    result = {}
+    for l in layers_to_extract:
+        result[l] = {
+            "syco": np.array(layer_acts[l]["pos"]),
+            "honest": np.array(layer_acts[l]["neg"])
+        }
+    return result
 
 # Extract from early, middle, late layers
 LAYERS = [8, 16, 21, 24]  # Representative layers
 print(f"Extracting from layers: {LAYERS}")
 
-syco_acts = extract_multi_layer_activations(pairs, "syco", LAYERS)
-honest_acts = extract_multi_layer_activations(pairs, "honest", LAYERS)
+all_acts = extract_multi_layer_activations(instances, LAYERS)
+
+# Separate for easy access
+syco_acts = {l: all_acts[l]["syco"] for l in LAYERS}
+honest_acts = {l: all_acts[l]["honest"] for l in LAYERS}
+print(f"Extracted: {len(syco_acts[LAYERS[0]])} syco, {len(honest_acts[LAYERS[0]])} honest per layer")
 
 # =============================================================================
 # SECTION 4: DIAGNOSTIC 1 - Within-Class Dimensionality
@@ -259,7 +280,7 @@ X_multi = np.concatenate([
     for l in LAYERS
 ], axis=-1)  # Shape: [N, hidden_dim * num_layers]
 
-y = np.array([1] * len(pairs) + [0] * len(pairs))
+y = np.array([1] * len(syco_acts[LAYERS[0]]) + [0] * len(honest_acts[LAYERS[0]]))
 
 X_train, X_test, y_train, y_test = train_test_split(
     X_multi, y, test_size=0.3, random_state=SEED, stratify=y
